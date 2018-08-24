@@ -1,0 +1,9 @@
+# Compiled files
+__pycache__/
+*.py[cod]
+
+# Saved images
+images/
+
+# Data
+data/
