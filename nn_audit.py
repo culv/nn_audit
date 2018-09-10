@@ -1,23 +1,33 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
-Created on Wed Mar 14 15:41:32 2018
-
-@author: culv
+Author: Culver McWhirter
+Date:   14 Mar 2018
+Time:   15:41
 """
 
 import numpy as np
+
+from torchvision import datasets, transforms
+
+import matplotlib as mpl
+mpl.use('TkAgg') # Use TkAgg backend to prevent segmentation fault
+
 import matplotlib.pyplot as plt
 from matplotlib import offsetbox
-from textwrap import wrap
 from mpl_toolkits.mplot3d import axes3d
-from sklearn import decomposition, neighbors
+
+from textwrap import wrap
+
+from sklearn import neighbors
+
+import h5py
+
+from dim_reduction import truncated_SVD
+
+from tqdm import tqdm
+
 import os
 import sys
-import tensorflow as tf
-from tensorflow.examples.tutorials.mnist import input_data
 
-    
 # normalize values to be in [0,1]
 # INPUTS: data = data to normalize
 # OUTPUTS: normalized data
@@ -27,36 +37,6 @@ def normalize(data):
     d_max = np.max(data)
     return (data - d_min) / (d_max - d_min)
  
-# load np.array from .gz file
-# INPUTS:    fname = filename where data is saved
-# OUTPUTS:   numpy array of data
-def load_np_array(fname):
-    return np.loadtxt(fname)
-
-# run truncated SVD on data (similar to PCA but more robust to numerical
-# precision and more efficient)
-# INPUTS:   data = data to undergo dimensionality reduction
-#           embed_dim = dimension to reduce data to
-#           zero_out_mean = (True/False) subtract mean of features from each training example
-# OUTPUTS:  embed_data = transformed data
-#           embed_basis = top embed_dim eigenvectors used to transform data
-def truncated_SVD(data, embed_dim, zero_out_mean=True, get_var=True):
-    svd = decomposition.TruncatedSVD(n_components = embed_dim)
-    if zero_out_mean: # zero out mean
-        data = data - np.mean(data, 0)
-    embed_data = svd.fit_transform(data)
-    embed_basis = svd.components_.T
-    if get_var: # get variance information of PCA components
-        var_percent = svd.explained_variance_ratio_
-        return embed_data, embed_basis, var_percent
-    else:
-        return embed_data, embed_basis
-
-# save the embedded data and embedding basis
-# INPUTS:   basis = numpy array of eigenvectors to transform data to reduced dimension
-#           save_fn = filename to save to
-def save_embedding_map(basis, save_fn):
-    np.savetxt(save_fn, basis)
 
 # scale and visualize the embedding vectors (supports 2d and 3d plots)
 # INPUTS:    dat = the data
@@ -131,14 +111,6 @@ def plot_embedding(dat, lab, title=None, plot_type='scatter', samples=False):
         ax.set_title(title)
     return fig, ax
 
-# fit k-nearest neighbors model to neuron data
-# INPUTS:   fit_data = data to fit model to
-#           n_neighbs = number of neighbors
-# OUTPUTS:  kNN = sklearn NearestNeighbors obect
-def kNearestNeighbs(fit_data, n_neighbs):
-    kNN = neighbors.NearestNeighbors(n_neighbors = n_neighbs)
-    kNN.fit(fit_data)
-    return kNN
 
 # check out what the nearest neighbors look like
 # INPUTS:   test_image = np.array of test image
@@ -165,7 +137,7 @@ def visualize_neighbors(test_image, knn_accuracy, knn_image_list, dim_list):
     n_img_per_row = np.sqrt(k).astype('int')
     test_img = np.zeros(((size+2)*n_img_per_row, (size+2)*n_img_per_row))
     test_img[30*2+1:30*2+28+1, 30*2+1:30*2+28+1] = 1-np.reshape(test_image, (28,28))
-    
+
     grid_list = []
     for image_list in knn_image_list:
         neighb_img = np.ones((30*n_img_per_row, 30*n_img_per_row))
@@ -184,7 +156,7 @@ def visualize_neighbors(test_image, knn_accuracy, knn_image_list, dim_list):
     # 2nd subplot will be accuracy of 250 k-nearest neighbors
     ax[1].bar(dim_list, knn_accuracy, color='g')
     ax[1].set_title('kNN accuracy by dimension for k={} neighbors'.format(250))
-    
+
     # rest of subplots will be k-nearest neighbors for each dimension
     for i, dim in enumerate(dim_list):
         im = ax[i+2].imshow(grid_list[i], cmap=plt.cm.binary)
@@ -207,266 +179,225 @@ def visualize_neighbors(test_image, knn_accuracy, knn_image_list, dim_list):
     
     return fig, ax
 
-# visualize % of kNN that fall in the same class for each test image        
-def neighbor_acc_visual(neighbor_acc_array, baseline, dims_vec, images):
-    num_subplots = neighbor_acc_array.shape[0]
-    cols = 2
-    rows = np.ceil(num_subplots/cols).astype('int64')
-    if num_subplots == 1:
-        fig, ax = plt.subplots()
-        ax = [ax]
-    else:
-        fig, ax = plt.subplots(rows, cols)
-        ax = ax.flatten()
-    fig.suptitle('Percentage of matching neighbors (k=500) and Variance Preserved by PCA for each dimension p') 
-    for i in range(num_subplots):
-        neighb_line = ax[i].scatter(dims, 100*neighbor_acc_array[i, :], c='g', s=7)
-        base_line = ax[i].scatter(dims, 100*baseline, c='b', s=5)
-        ax[i].set_xlabel('dimension p')
-        if (i==2) or (i==3):
-            ax[i].set_ylabel('% Variance Preserved/% Matching Neighbors')
-        ax[i].set_xlim(0,100)
-        ax[i].set_ylim(0,100)
-        ax[i].grid()
-        ax[i].set_xticks(np.arange(0,101,1), minor=True)
-        ax[i].set_yticks(np.arange(0,101,10))
-        ax[i].grid(which='minor')
-        
-        imagebox = offsetbox.AnnotationBbox(
-                offsetbox.OffsetImage(1-images[i].reshape(28,28), cmap=plt.cm.gray_r),
-                (5,95), pad=0)
-        ax[i].add_artist(imagebox)
-        
-    fig.legend((neighb_line, base_line), ('% kNN with same label', '% variance preserved'))
-    return fig, ax
-   
-# show grids of nearest neighbor images for chosen dimensions
-def show_neighbs_grid(nn_tensor, dims_list):
-    grid_size_in_ims = np.sqrt(nn_tensor.shape[1]).astype('int64')
-    num_neighbs = nn_tensor.shape[1]-1
-    num_subplots = nn_tensor.shape[0]
-    imsize = np.sqrt(nn_tensor.shape[2]).astype('int64')
-    cols = 3
-    rows = np.ceil(num_subplots/2).astype('int64')
-    # make subplots
-    if num_subplots == 1:
-        fig, ax = plt.subplots()
-        ax = [ax]
-    else:
-        fig, ax = plt.subplots(rows, cols)
-        ax = ax.flatten()
 
-    #loop over chosen dimensions    
-    for i in range(num_subplots):
-        # format grid of images with test image in upper left corner    
-        true_grid_size = int(grid_size_in_ims*imsize + (grid_size_in_ims+2)*2)
-        grid = np.ones([true_grid_size, true_grid_size])
-        for j in range(grid_size_in_ims): # y-coord of grid
-            jx = j*(imsize+2)+2
-            for k in range(grid_size_in_ims): # x-coord of grid
-                kx = k*(imsize+2)+2
-                grid[kx:kx+imsize, jx:jx+imsize] = 1-nn_tensor[i, (j*grid_size_in_ims)+k].reshape(imsize, imsize)
-        # add border around test image and whole grid
-        grid[imsize:imsize+4, 0:imsize+4] = 0.5
-        grid[0:imsize+4, imsize:imsize+4] = 0.5
-        grid = np.pad(grid, ((4,4),(4,4)), 'constant', constant_values=((0.5,0.5),(0.5,0.5)))        
-        ax[i].imshow(grid, cmap=plt.cm.gray_r)
-        ax[i].set_title('p={}'.format(dims_list[i]))
-    for this_ax in ax:
-        this_ax.axis('off') # remove axes
-        this_ax.patch.set_visible('off') # remove borders
-    fig.suptitle('{} Nearest Neighbors of Test Image in p-dimensional Neuron Space'.format(num_neighbs))
-    return fig, ax
+def neighbor_acc_visual(ax, accuracies, captured_var, dims, image):
+    """Visualize the accuracy of the training set nearest neighbors (i.e. neighbors that have the same label as
+    the query image) as a function of the dimension the neuron activations are reduced to. The variance captured
+    by PCA as a function of dimension is also shown for comparison. The query image is also shown in the top left
+    for reference
+
+    Args:
+        ax = A matplotlib Axes object to plot on
+        accuracies = A NumPy array of accuracies in the range [0,1]
+        captured_var = A NumPy array of the variance captured by PCA for each dimension
+        dims = A NumPy array of the relevant dimensions
+        image = The query image
+
+    Returns:
+        ax = The finished Axes object
+    """
+
+    # Draw scatter plots for the kNN accuracy and the captured variance vs. dimension
+    acc = ax.scatter(dims, 100*accuracies, c='g', s=7)
+    var = ax.scatter(dims, 100*captured_var, c='b', s=5)
+
+    # Labels, axes limits, tick marks, etc.
+    ax.set_xlabel('dimension')
+    ax.set_ylabel('% Variance Preserved/% Matching Neighbors')
+    ax.set_xlim(0,100)
+    ax.set_ylim(0,100)
+    ax.grid()
+    ax.set_xticks(np.arange(0,101,1), minor=True)
+    ax.set_yticks(np.arange(0,101,10))
+    ax.grid(which='minor')
+    ax.legend((acc, var), ('% kNN w/ same label', '% variance preserved by PCA'))
+
+    # Show query image    
+    imagebox = offsetbox.AnnotationBbox(
+            offsetbox.OffsetImage(1.-image, cmap=plt.cm.gray_r),
+            (5,95), pad=0)
+    ax.add_artist(imagebox)
+        
+    return ax
+   
+
+def show_neighbs_grid(ax, query_image, neighbor_images, dim, grid_size=6):
+    """Show a grid of nearest neighbors in the training set. Query image is shown in the top left,
+    and the neighbors are shown in the rest of the grid. Grid has 'grid_edge' number of images along
+    each side
+
+    Args:
+        ax = A matplotlib Axes object to plot on
+        query_image = The test image
+        neighbor_images = The nearest training images
+        grid_edge = The number of images along an edge
+
+    Returns:
+        ax = The finished Axes object
+    """
+
+    # Grab number of nearest neighbors needed for the grid
+    neighbor_images = neighbor_images[:grid_size**2-1, :, :]
+
+    # Concatenate query image with neighbor images
+    images = np.concatenate((query_image[np.newaxis,:,:], neighbor_images), 0)
+
+    # Image size in pixels
+    im_size = neighbor_images.shape[-1]
+
+    # Create blank grid
+    grid_size_in_pixels = grid_size*im_size + (grid_size+2)*2
+    grid = np.ones([grid_size_in_pixels, grid_size_in_pixels])
+
+    # Loop over image slots
+    for j in range(grid_size):
+        # The y-coordinate
+        jx = j*(im_size+2)+2
+        for k in range(grid_size):
+            # The x-coordinate
+            kx = k*(im_size+2)+2
+            grid[kx:kx+im_size, jx:jx+im_size] = 1.-images[k+j*grid_size]
+
+    # Add border around query image and the whole grid
+    g = 0.5
+    grid[im_size:im_size+4, 0:im_size+4] = g
+    grid[0:im_size+4, im_size:im_size+4] = g
+    grid = np.pad(grid, ((4,4),(4,4)), 'constant', constant_values=((g,g),(g,g)))        
+
+    # Place grid image inside the Axes object
+    ax.imshow(grid, cmap=plt.cm.gray_r)
+
+    # Remove axes and borders
+    ax.axis('off')
+    ax.patch.set_visible('off')
+
+    # Set title
+    ax.set_title('{} Nearest Test Set Images in {}-dim Neuron Space'.format(grid_size**2-1, dim))
+
+    return ax
+
+
+def find_training_neighbors(test_point, training_points, training_images, training_labels, k):
+    """Given a test point, find the nearest neighbor images and corresponding labels in the training set
+
+    Args:
+        test_point = The query point
+        training_points = A NumPy array of all the training points (in the reduced dimension space)
+        k = Number of neighbors to find
+        training_images = A NumPy array of all the raw training images
+        training_labels = A NumPy array of all the training labels
+
+    Returns:
+        nearest_images = The top k nearest images
+        nearest_labels = The top k nearest labels
+    """
+
+    # If training points are 1-dim, add axes to make it a 2D array            
+    if test_point.shape[-1] == 1:
+        training_points = training_points.reshape(1,-1).T
+
+    # Fit kNN to the training data
+    knn = neighbors.NearestNeighbors(n_neighbors = k)
+    knn.fit(training_points)
+
+    # Get the distances and indices of top k nearest neighbors in the train set
+    dist, neighbs = knn.kneighbors(test_point[np.newaxis,:])
+
+    # Get rid of singleton dimension
+    neighbs = np.squeeze(neighbs)
+
+    # Get nearest images and their labels
+    nearest_images = training_images[neighbs]
+    nearest_labels = training_labels[neighbs]
+
+    return nearest_images, nearest_labels
+
+
+def main():
+    # Load neuron data for test and train sets
+    train_neurons = h5py.File('./datasets/neurons/compressed_mnist_train_100neurons.hdf5', 'r')
+    test_neurons = h5py.File('./datasets/neurons/compressed_mnist_test_100neurons.hdf5', 'r')
+
+    # Do SVD to find projection matrix
+    evecs, evals = truncated_SVD(train_neurons['activations'])
+
+    # Get the MNIST training set
+    train_set = datasets.MNIST('./datasets/mnist', train=True, download=True,
+            transform=transforms.Compose([
+                transforms.ToTensor(),
+                ]))
+
+    # Get labels and images (as 784-d vectors)
+    train_labels = train_set.train_labels.numpy()
+    train_images = train_set.train_data.numpy()/255.
+
+
+    # Get the MNIST test set
+    test_set = datasets.MNIST('./datasets/mnist', train=False, download=True,
+            transform=transforms.Compose([
+                transforms.ToTensor(),
+                ]))
+
+    # Get labels and images (as 784-d vectors)
+    test_labels = test_set.test_labels.numpy()
+    test_images = test_set.test_data.numpy()/255.
+
+    # Get percentage of variance captured by each dimension of PCA
+    cum_var_ratio = np.cumsum(evals)/np.sum(evals)
+
+    # Number of neighbors
+    k = 500
+
+    # Indices of test images to check
+    query_idx = 12
+
+    # The query image and label
+    query_image = test_images[query_idx]
+    query_label = test_labels[query_idx]
+
+    """
+    # Visualize accuracy & variance captured by PCA as a function of dimension
+    accs = []
+
+    dims = np.linspace(1,9,9)
+    for i in tqdm(range(9)):
+        # Reduce the dimension of train and test sets
+        train_neurons_embed = np.matmul(train_neurons['activations'], evecs[:, 0:i+1])
+        test_neurons_embed = np.matmul(test_neurons['activations'], evecs[:, 0:i+1])
+            
+        # Find the k nearest images and their labels in the training set
+        nearest_images, nearest_labels = find_training_neighbors(test_neurons_embed[query_idx], 
+            train_neurons_embed, train_images, train_labels, k)
+
+        # Get accuracy and append
+        accs.append(np.mean(nearest_labels==query_label))
+
+    # Convert accuracy to NumPy array
+    accs = np.array(accs)
+
+    fig, ax = plt.subplots()
+    ax = neighbor_acc_visual(ax, accs, cum_var_ratio[:9], dims, query_image)
+    plt.show()
+    """
+
+    # Visualize the nearest images in the training set
+    # Dimensions to project into
+    dim = 5
+
+    # Reduce the dimension of train and test sets
+    train_neurons_embed = np.matmul(train_neurons['activations'], evecs[:, 0:dim])
+    test_neurons_embed = np.matmul(test_neurons['activations'], evecs[:, 0:dim])
+
+    # Find the k nearest images and their labels in the training set
+    nearest_images, nearest_labels = find_training_neighbors(test_neurons_embed[query_idx], 
+        train_neurons_embed, train_images, train_labels, k)
+
+    fig2, ax2 = plt.subplots()
+
+    ax2 = show_neighbs_grid(ax2, query_image, nearest_images, dim)
+
+    plt.show()
 
 
 if __name__ == '__main__':
-
-    # TRAINING STAGE:
-    # - load or generate neuron data for training set
-    # - find embedding basis for specified dimensions
-    # - save embedding basis
-    training = False
-    if training:
-        print('[ ] Start training...')
-        # load train and test neuron data
-        print('\t[ ] Loading training set neuron data...')
-        train_neurons = load_np_array('mnist_100neurons_train_set_neuron_data.gz')
-        # chop off classifications layer
-        train_neurons = train_neurons[:,0:100]
-        print('\t[*] DONE LOADING NEURON DATA')
-
-        # max embedding dimension (contains the basis for dim p={1,2,..., n-1} in
-        # its first p columns)
-        max_dim = train_neurons.shape[1]-1
-
-        print('\t[ ] Finding TruncatedSVD basis...')
-        embedding, basis, var_ratio = truncated_SVD(train_neurons, max_dim)
-        cum_var_ratio = np.cumsum(var_ratio)
-        save_fn = '{}dim_basis.gz'.format(max_dim)
-        var_fn = 'PCA_model_variance.gz'
-        save_embedding_map(basis, save_fn)
-        save_embedding_map(cum_var_ratio, var_fn)
-        print('\t[*] SAVED BASIS TO {}'.format(save_fn))
-        print('[*] DONE TRAINING')
-
-
-#        basis = np.loadtxt('3dim_basis.gz')
-#        embedding = np.matmul(train_neurons, basis)
-
-#        # normalize data for plotting
-#        embedding = normalize(embedding)
-#    
-#        # load labels and images from MNIST
-#        mnist = input_data.read_data_sets('MNIST/', one_hot=True)
-#        # convert labels from one-hot to digit value
-#        train_labels = np.argmax(mnist.train.labels, 1)
-#    
-#        # plot embedding visualization
-#        print('[ ] Plotting embedding...')
-#        fig, ax = plot_embedding(embedding, train_labels, '3-d embedding of training set\'s 100-d neuron activations', plot_type='digit')
-#        ax.set_xlabel('principal component 1')
-#        ax.set_ylabel('principal component 2')
-#        ax.set_zlabel('principal component 3')
-#        plt.show()
-#        print('[*] Finished plot')
-    
-
-    # TESTING STAGE:
-    # - load labels and images from MNIST in TensorFlow
-    # - load or generate neuron data for training and test set
-    # - load embedding basis for specified dimensions
-    # - transform training and test data into each embedding dimension
-    # - find k-nearest neighbors in each embedding dimension
-    # - create k-nearest neighbors visualizations
-    
-    testing = True
-    if testing:
-        print('[ ] Start testing...')
-        print('\t[ ] Loading MNIST data...')
-        # load labels and images from MNIST
-        mnist = input_data.read_data_sets('MNIST/', one_hot=True)
-        # convert labels from one-hot to digit value
-        train_labels = np.argmax(mnist.train.labels, 1)
-        train_images = mnist.train.images
- 
-        test_labels = np.argmax(mnist.test.labels, 1)
-        test_images = mnist.test.images
-
-        print('\t[*] DONE LOADING')
-
-        
-        # load training and test set neuron data
-        print('\t[ ] Loading neuron data...')
-        train_neurons = load_np_array('mnist_100neurons_train_set_neuron_data.gz')
-        test_neurons = load_np_array('mnist_100neurons_test_set_neuron_data.gz')
-        # chop off classifications layer
-        train_neurons = train_neurons[:,0:100]
-        test_neurons = test_neurons[:,0:100]
-        print('\t[*] DONE LOADING')
-
-        cum_var_ratio = load_np_array('PCA_model_variance.gz')
-
-        # load embedding basis
-        print('\t[ ] Loading embedding basis...')
-        basis_file = '{}dim_basis.gz'.format(99)
-        basis = load_np_array(basis_file)
-        print('\t[*] DONE LOADING')
-        
-        # transform neuron data into basis, and find k-nearest neighbors
-        neighbs_list = []
-        k = 500
-        test_idx = [12, 734, 33, 508, 809, 914]
-        print('\t[ ] Finding k-nearest neighbors...')
-        dims = np.arange(1,100,1)
-        for i, dim in enumerate(dims):
-            train_neurons_embed = np.matmul(train_neurons, basis[:, 0:dim])
-            test_neurons_embed = np.matmul(test_neurons, basis[:, 0:dim])
-
-            # if 1-dim embedding, put train set embedding into 2D np.array()            
-            if dim == 1:
-                train_neurons_embed = train_neurons_embed.reshape(1,-1).T
-            # if only 1 test point, grab its embedding and reshape into 2D np.array()
-            if len(test_idx) == 1:
-                test_point_embed = test_neurons_embed[test_idx].reshape(1,-1)
-
-            else:
-                test_points_embed = test_neurons_embed[test_idx]
-
-            print('\t\t[ ] Fitting kNN model for {}-dim...'.format(dim))            
-            knn = kNearestNeighbs(train_neurons_embed, n_neighbs=k)
-
-            dist, neighbs = knn.kneighbors(test_points_embed)
-            neighbs_list.append(neighbs)
-            print('\t\t[*] FOUND NEIGHBORS FOR {}-dim'.format(dim))
-        print('\t[*] DONE FINDING NEIGHBORS')
-        
-        print('\t[ ] Grabbing nearest neighbor images and calculating accuracy...')
-        # the test images
-        test_points_images = test_images[test_idx]
-        # list to hold neighbor images and accuracies
-        nn_images_list = []
-        neighbor_acc = []
-        # shifter for manipulating training set neighbor indexing
-        shifter = train_labels.shape[0]*np.matmul(
-                np.array([np.arange(0,len(test_idx),1)]).T, 
-                np.ones([1, k]))
-        # get labels of test points
-        test_point_labels = test_labels[test_idx]
-        # create comparer matrix to compare test and neighbor labels
-        comparer = np.matmul(
-                np.array([test_point_labels]).T,
-                np.ones([1,k]))
-
-        # sample dimensions
-        sample_dims = [1,2,3,5,10,20]
-        for i, neighb_idx_array in enumerate(neighbs_list):
-
-            if (i+1) in sample_dims:
-                # get neighbor images
-                neighb_images = train_images[neighb_idx_array[:,0:35].flatten()].reshape([6,35,784])
-                # add test image to front
-                neighb_images_with_test = np.concatenate((test_points_images.reshape([6,1,784]), neighb_images), axis=1)
-                nn_images_list.append(neighb_images_with_test)
-            
-            # start making one hot vector of neighb_idx_array
-            one_hot_idxs = (neighb_idx_array + shifter).flatten().astype('int64')
-            one_hot = np.zeros(len(test_idx)*train_labels.shape[0])
-            one_hot[one_hot_idxs] = 1
-            one_hot = one_hot.reshape(len(test_idx), train_labels.shape[0])
-            # reshape one hot vector into 2d array and multiply by test_labels
-            neighb_labels = one_hot*(train_labels+1) # add one so that you can remove all zeros and get just 500 neighbor's labels, then subtract it again
-            neighb_labels = neighb_labels[neighb_labels!=0].reshape(len(test_idx),k)-1
-
-            # compute accuracy for all test points
-            acc = np.array([np.mean((comparer==neighb_labels), 1)]).T
-            if i == 0:
-                neighbor_acc = acc
-            else:
-                neighbor_acc = np.concatenate((neighbor_acc, acc), axis=1)
-
-        print('\t[*] DONE')
-
-        print('\t[ ] Plotting neighbor accuraccy/PCA variance...')
-        # plot accuracy visual
-        fig, ax = neighbor_acc_visual(neighbor_acc, cum_var_ratio, dims, test_points_images)
-        print('\t[*] DONE')
-        # reorganize neighbor images so that same test image but different
-        # dimensions are displayed on the same plot
-        nn_images_list = np.array(nn_images_list)
-        nn_images_list = np.transpose(nn_images_list, (1,0,2,3))
-        print('\t[ ] Plotting neighbor grids...')
-        # plot neighbor images visual
-        placeholder = []
-        for i in range(nn_images_list.shape[0]):
-            placeholder.append(show_neighbs_grid(nn_images_list[i], sample_dims))
-        print('\t[*] DONE')
-        
-        
-#        print('\t[ ] Creating nearest neighbors visualization...')        
-#        fig, ax = visualize_neighbors(test_image, neighbor_acc, neighbor_images_list, dims)
-#        # plot using tight_layout() to avoid overlapping titles/figures
-#        plt.tight_layout(h_pad=5)
-#        plt.show()
-#        print('\t[*] DONE')
-
-        print('[*] DONE TESTING')
+    main()
