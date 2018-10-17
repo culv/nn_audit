@@ -7,32 +7,53 @@ import h5py
 import os
 import sys
 
-def truncated_SVD(data):
-    """Run truncated SVD on data (similar to PCA but more robust to numerical
-    precision and more efficient)
 
-    Args:
-        data = Data to undergo dimensionality reduction
+class PCA(object):
+    def __init__(self, filename, p):
+        """Object for dimensionality reduction using PCA/truncated SVD"""
+        self.filename = filename
+        self.p = p
 
-    Returns:
-        evecs = Ordered eigenvectors (used to transform data)
-        evals = Ordered eigenvalues
-    """
+        self.svd = None
+        self.V = None
+        self.D = None
 
-    # Initialize the truncated SVD class, with n_components as the largest possible
-    svd = decomposition.TruncatedSVD(n_components = data.shape[-1]-1)
+    def run(self, data):
+        """Run truncated SVD on data (similar to PCA but more robust to numerical
+        precision and more efficient)
 
-    # Zero out the mean of the data
-    data = data - np.mean(data, 0)
+        Args:
+            data = Data to undergo dimensionality reduction
+        """
 
-    # Run truncated SVD on the zero-mean data
-    svd.fit(data)
+        # Initialize the truncated SVD class, with n_components as the largest possible
+        self.svd = decomposition.TruncatedSVD(n_components = data.shape[-1]-1)
 
-    # Get the basis of eigenvectors, and their accompanying eigenvalues (singular values squared)
-    evecs = svd.components_.T
-    evals = svd.singular_values_**2
+        # Zero out the mean of the data
+        data = data - np.mean(data, 0)
 
-    return evecs, evals
+        # Run truncated SVD on the zero-mean data
+        self.svd.fit(data)
+
+        # Get the basis of eigenvectors, and their accompanying eigenvalues (singular values squared)
+        self.V = self.svd.components_.T
+        self.D = self.svd.singular_values_**2
+
+    def save(self):
+        """Save the eigenvectors and eigenvalues in HDF5 file at filename"""
+        f = h5py.File(self.filename, 'w')
+        f.create_dataset('V', data=self.V)
+        f.create_dataset('D', data=self.D)
+
+    def load(self):
+        """Load the eigenvectors and eigenvalues from filename"""
+        f = h5py.File(self.filename, 'r')
+        self.V = f['V']
+        self.D = f['D']
+
+    def project(self, data):
+        """Return the data projected onto the top p principal components"""
+        return np.matmul(data, self.V[:,0:self.p])
 
 
 def main():

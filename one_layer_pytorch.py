@@ -14,10 +14,28 @@ from torchvision import datasets, transforms
 
 import numpy as np
 
+import argparse
+
 from tqdm import tqdm
 
 import sys
 import os
+
+# Command line arguments
+parser = argparse.ArgumentParser(description='Pytorch one layer fully-connected')
+
+parser.add_argument('--batch-size', type=int, default=64,
+	help='input batch size for testing/training (default: 64)')
+
+parser.add_argument('--epochs', type=int, default=10,
+	help='number of epochs to train (default: 10)')
+
+parser.add_argument('--save-name', type=str, required=True,
+	help='base filename to save models to (required)')
+
+parser.add_argument('--shear', type=bool, default=False,
+	help='use Pytorch random shear transform (default: False)')
+
 
 
 class SimpleNN(nn.Module):
@@ -98,29 +116,51 @@ def eval_model(model, test_loader):
 	acc = float(correct.item()) / len(test_loader.dataset)
 	return acc
 
+class RandomChoiceShear(object):
+	"""Custom PyTorch data transform to randomly shear a PIL Image using a shear chosen from
+	a preset list"""
+	def __init__(self, shear_choices):
+		self.shear_choices = shear_choices
+
+	def __call__(self, img):
+		shear = np.random.choice(self.shear_choices)
+		return transforms.functional.affine(img, angle=0, translate=(0,0), scale=1, shear=shear)
+
 
 def main():
-	# Training hyperparameters
-	epochs = 10
-	batch_size = 64
+	# Parse command line arguments/hyperparameters
+	args = parser.parse_args()
+	print(args)
+	
+	# Basic transform
+	basic_transform = transforms.Compose([
+		transforms.ToTensor(),
+		transforms.Normalize((0.1307,), (0.3081,))
+		])
+
+	# Random shear transform
+	shear_choices = np.linspace(-50,50,11)
+	random_shear_transform = transforms.Compose([
+		RandomChoiceShear(shear_choices),
+		transforms.ToTensor(),
+		transforms.Normalize((0.1307,), (0.3081,))
+		])
+
+	# Transform to use
+	if args.shear:
+		xfm = random_shear_transform
+	else:
+		xfm = basic_transform
+
 
 	# Use MNIST dataset
 	train_loader = torch.utils.data.DataLoader(
 		datasets.MNIST('./datasets/mnist', train=True, download=True,
-			transform=transforms.Compose([
-				transforms.ToTensor(),
-				transforms.Normalize((0.1307,), (0.3081,))
-				])),
-		batch_size=batch_size, shuffle=True)
+			transform=xfm), batch_size=args.batch_size, shuffle=True)
 
 	test_loader = torch.utils.data.DataLoader(
 		datasets.MNIST('./datasets/mnist', train=False, download=False,
-			transform=transforms.Compose([
-				transforms.ToTensor(),
-				transforms.Normalize((0.1307,), (0.3081,))
-				])),
-		batch_size=batch_size, shuffle=True)
-
+			transform=xfm), batch_size=args.batch_size, shuffle=True)
 
 	# Create simple FC model
 	fc_net = SimpleNN()
@@ -131,13 +171,13 @@ def main():
 
 
 	# Training loop
-	for epoch in range(epochs):
+	for epoch in range(args.epochs):
 		for images, labels in tqdm(iter(train_loader)):
 
 			# Zero out gradient buffers
 			optimizer.zero_grad()
 
-			# Reshape images
+			# Reshape images (flatten)
 			images = images.reshape(images.shape[0], images.shape[2]*images.shape[3])
 
 			# Forward pass of network, collecting both FC activations and output
@@ -157,7 +197,7 @@ def main():
 		test_acc = eval_model(fc_net, test_loader)
 
 		print('[Epoch {}] Train Acc: {:5.2f} Test Acc: {:5.2f}'.format(epoch, 100*acc, 100*test_acc))
-		save_model(fc_net, epoch, 'fc100')
+		save_model(fc_net, epoch, args.save_name)
 
 
 

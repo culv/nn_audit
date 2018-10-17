@@ -5,101 +5,86 @@ Time:   12:17
 """
 
 import torch
-
 from torchvision import datasets, transforms
-
 import numpy as np
 
 import h5py
 
 from tqdm import tqdm
+import argparse
 
-from one_layer_pytorch import SimpleNN
+from one_layer_pytorch import SimpleNN, RandomChoiceShear
+from nn_audit_utils import gather_neuron_data
 
 import sys
 import os
 
-def gather_neuron_data(model, train_set, fname, compression=None):
-	"""Collect fully-connected neuron activations from a network for every image in a 
-	given dataset
+# Command line arguments
+parser = argparse.ArgumentParser(description='Pytorch one layer fully-connected')
 
-	Args:
-		model = PyTorch model
-		train_set = A PyTorch Dataset object
-		fname = Full path to save HDF5 file to
-		compression = Compression mode for h5py
+parser.add_argument('--batch-size', type=int, default=64,
+	help='batch size for neural network input (default=64)')
 
-	Returns:
+parser.add_argument('--model-path', type=str, required=True,
+	help='relative path (from curent directory) to load Pytorch model from (required)')
 
-	"""
-	
-	# Get length of training set
-	train_size = len(train_set)
+parser.add_argument('--save-path', type=str, required=True,
+	help='relative path (from current directory) to save neuron data to (required)')
 
-	# Create HDF5 Data file
-	f = h5py.File(fname, 'w')
+parser.add_argument('--train', action='store_true',
+	help='collect neuron data on the train set')
 
-	# Create datasets for labels, predictions, and neuron activations
-	label_dset = f.create_dataset('labels', (train_size, ), compression=compression, dtype='i')
-	predict_dset = f.create_dataset('predictions', (train_size, ), compression=compression, dtype='i')
-	neuron_dset = f.create_dataset('activations', (train_size, 100), compression=compression, dtype='f')
-
-	# Set model to eval mode
-	model.eval()
-
-	# Run through training set
-	i = 0
-	for image, label in tqdm(train_set):
-
-		# Reshape image from (1,28,28) to (784,)
-		image = image.reshape(image.shape[1]*image.shape[2])
-
-		# Forward pass of network to get neuron activations
-		fc_neurons, out = model.forward(image)
-
-		# Get network's classification
-		predict = torch.argmax(out).item()
-
-		# Convert hidden fully-connected neurons to NumPy array
-		acts = fc_neurons[0].detach().numpy()
-
-		# Save to HDF5
-		label_dset[i] = label
-		predict_dset[i] = predict
-		neuron_dset[i] = acts
-
-		# Increment index
-		i += 1
+parser.add_argument('--shear', action='store_true',
+	help='collect neuron data for the random shear experiment')
 
 
 def main():
-	# Batch size
-	batch_size = 64
+	# Get command line args
+	args = parser.parse_args()
+	print(args)
 
-	# Path to model
-	model_path = './models/fc100_09.pt'
-
-	# Initialize blank model, then load in parameters
+	# Initialize blank model, then load in parameters from args.model_path
 	fc = SimpleNN()
-	fc.load_state_dict(torch.load(model_path))
+	fc.load_state_dict(torch.load(args.model_path))
 
-	# Get the MNIST training set
-	train_data = datasets.MNIST('./datasets/mnist', train=True, download=True,
-			transform=transforms.Compose([
-				transforms.ToTensor(),
-				transforms.Normalize((0.1307,), (0.3081,))
-				]))
+	if args.shear:
+		# Get MNIST set for each shear in shear_list
+		shear_list = np.linspace(-50, 50, 11).astype(np.int8)
 
-	gather_neuron_data(fc, train_data, './datasets/neurons/compressed_mnist_train_100neurons.hdf5', compression='gzip')
+		xfms = [transforms.Compose([
+			RandomChoiceShear([shear]),
+			transforms.ToTensor(),
+			transforms.Normalize((0.1307,), (0.3081,))
+			]) for shear in shear_list]
 
-	# Get the MNIST test set
-	test_data = datasets.MNIST('./datasets/mnist', train=False, download=True,
-			transform=transforms.Compose([
-				transforms.ToTensor(),
-				transforms.Normalize((0.1307,), (0.3081,))
-				]))
+		dsets = [datasets.MNIST('./datasets/mnist', train=args.train, download=True, transform=xfm) for xfm in xfms]
+		
+		# Concatenate them into one dataset of the form [all MNIST with shear 1, all MNIST with shear 2, ...]
+		data = torch.utils.data.ConcatDataset(dsets)
 
-	gather_neuron_data(fc, test_data, './datasets/neurons/compressed_mnist_test_100neurons.hdf5', compression='gzip')
+		# Create corresponding list of shears for each image
+		shears = [shear for shear in shear_list for i in range(len(dsets[0]))]
+
+		# Create corresponding list of MNIST training set index for each image
+		mnist_index = np.tile(np.linspace(0, len(dsets[0])-1, len(dsets[0])), len(dsets)).astype(np.uint)
+
+		# Create dictionary of other metadata (shears and mnist index) to pass to gather_neuron_data()
+		metadata_dict = dict(shears=shears, mnist_index=mnist_index)
+
+	else:
+		# Get the MNIST set
+		xfm = transforms.Compose([
+			transforms.ToTensor(),
+			transforms.Normalize((0.1307,), (0.3081,))
+			])
+
+		data = datasets.MNIST('./datasets/mnist', train=args.train, download=True, transform=xfm)
+		
+		mnist_index = np.linspace(0, len(data)-1, len(data)).astype(np.uint)
+		metadata_dict = dict(mnist_index=mnist_index)
+
+
+	gather_neuron_data(fc, data, args.save_path, batch_size=args.batch_size, compression='gzip', metadata=metadata_dict)
 
 
 if __name__ == '__main__':

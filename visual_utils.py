@@ -21,6 +21,110 @@ from mpl_toolkits.mplot3d import axes3d
 import sys
 import os
 
+def normalize(data):
+    """Normalize data to be in [0,1]"""
+    d_min = np.min(data)
+    d_max = np.max(data)
+    return (data - d_min) / (d_max - d_min)
+ 
+def plot_embedding(data, labels, images, title=None, plot_type='scatter', show_samples=False):    
+    """Visualize the data as a scatter plot in a reduced dimension (either 2-d or 3-d). You can also
+    optionally display sample images to give an idea of the data subspace, and display each data point by
+    its class label (integers 0-9) instead of a point
+
+    Args:
+        ax = A matplotlib Axes object to plot in
+        data = The data to be visualized
+        labels = Class labels corresponding to data
+        images = The original images corresponding to data
+        title = Title of the plot
+        point_type = Plot points either as points in a scatter plot, or as digits
+        samples = Whether or not to display sample images on the plot
+
+    Returns:
+        fig, ax = The finished plot (Figure and Axes objects)
+    """
+
+    # Get the dimensions of the data
+    m, dim = data.shape
+
+    # Normalize the data
+    data = normalize(data)    
+
+    # Plot for 3-d data    
+    if dim == 3:
+        fig = plt.figure(dpi=60)
+        ax = axes3d.Axes3D(fig) #fig.gca(projection='3d')
+        #ax.set_axis_off()
+
+        # Loop over all data vectors, plotting either as points or digits
+        if plot_type == 'digit':
+            for i in range(m):
+                # Plot digit as a string, at the location determined by the data point
+                # Color is determined from Set1 colormap
+                ax.text(data[i,0], data[i,1], data[i,2], str(labels[i]),
+                    color=plt.cm.tab10(labels[i] / 10.),
+                    fontdict={'weight': 'bold', 'size': 9})
+
+        elif plot_type == 'scatter':
+            ax.scatter(data[:,0], data[:,1], data[:,2], c = labels)
+
+    # Plot for 2-d data
+    if dim == 2:
+        fig, ax = plt.subplots()
+        ax.scatter(0,0,s=0)
+
+        # Loop over all data vectors, plotting either as points or digits
+        if plot_type == 'digit':
+            for i in range(m):
+                # Plot digit as a string, at the location determined by the data point
+                # Depending on version of matplotlib, tab10 colormap may be Vega10
+                try:
+                    ax.text(data[i,0], data[i,1], str(labels[i]),
+                    color=plt.cm.tab10(labels[i] / 10.),
+                    fontdict={'weight': 'bold', 'size': 9})
+                except:
+                    ax.text(data[i,0], data[i,1], str(labels[i]),
+                            color=plt.cm.Vega10(labels[i] / 10.),
+                            fontdict={'weight': 'bold', 'size': 9})
+
+        elif plot_type == 'scatter':
+            ax.scatter(data[:,0], data[:,1], c=labels)
+
+        # Show sample images if desired (will only work with matplotlib v1.0+)
+        if show_samples and hasattr(offsetbox,  'AnnotationBbox'):
+
+            # Initialize shown images locations array, starting with upper right corner of plot
+            shown_images = np.array([[1.,1.]])
+
+            # Loop over all data points
+            for i in range(m):
+
+                # Calculate squared distance between current image's data point and all others that have already been displayed
+                dist = np.sum((dat[i] - shown_images) ** 2, 1)
+
+                # If the smallest squared distance is below threshold, don't display (this ensures plot isn't overcrowded)
+                if np.min(dist) < 4e-3:
+                    continue
+
+                # Otherwise, add data point to array of shown images and display the image at the corresponding location
+                shown_images = np.r_[shown_images, [data[i]]]
+                imagebox = offsetbox.AnnotationBbox(
+                    offsetbox.OffsetImage(images[i],  cmap=plt.cm.gray_r),
+                    data[i])
+
+                ax.add_artist(imagebox)
+
+    # Set axes limits, title, etc.
+    ax.set_xlim(0,1)
+    ax.set_ylim(0,1)
+    if dim == 3:
+        ax.set_zlim(0,1)
+    if title is not None:
+        ax.set_title(title)
+
+    return fig, ax
+
 def neighbor_acc_visual(ax, accuracies, captured_var, dims, image):
     """Visualize the accuracy of the training set nearest neighbors (i.e. neighbors that have the same label as
     the query image) as a function of the dimension the neuron activations are reduced to. The variance captured
@@ -117,7 +221,6 @@ def show_neighbs_grid(ax, query_image, neighbor_images, dim, grid_size=6):
 
     return ax
 
-
 def shear(image, shear):
 	"""Take a PyTorch Tensor object, shear it using 'shear' as the angle, then return
 	the sheared image (also as a Tensor)"""
@@ -129,27 +232,63 @@ def shear(image, shear):
 
 	return sheared_image
 
-def visualize_shear(axs, image, shear_list, labels=True):
+def visualize_shear(ax, image, shear_list, ylabel=None, xlabel=False, title=None):
 	"""Visualize the progression of shearing an image for several different shearing
 	angles in a list
 
 	Args:
-		axs = List of matplotlib Axes objects
+		ax = A matplotlib Axes object
 		image = The original image
 		shear_list = The list of shearing angles
-		labels = Whether or not to write the shearing angle over each image
+		ylabel = (Optional) The y-label for this axis will be the given argument
+		xlabel = (Optional) The x-label for this axis will be the list of shears
+		title = (Optional) Title of the axis
 
 	Returns:
-		axs = List of finished plots
+		ax = Finished plot
 	"""
 
-	for i, shear_angle in enumerate(shear_list):
-		axs[i].imshow(1.-shear(image, shear_angle).squeeze(), cmap=plt.cm.binary)
-		if labels:
-			axs[i].set_title('{}$^\circ$'.format(shear_angle))
-		axs[i].axis('off')
+	# Create Numpy array for all the images
+	c, h, w = image.shape
+	n = len(shear_list)
+	images = np.zeros([c, h, n*w+(n-1)*2])
 
-	return axs
+
+	# Loop over the shear angles to show the progression of shears
+	# Counter to hold x-coord that each image will start at
+	x_start = 0
+	for i, shear_angle in enumerate(shear_list):
+		# Shear the image and concatenate it with the previous sheared images
+		images[:,:,x_start:x_start+w] = 1.-shear(image, shear_angle)
+	
+		# Increment starting x-coord for next image
+		x_start += w+2
+
+
+	# Add image to the axis
+	ax.imshow(images.squeeze(), cmap=plt.cm.binary)
+	
+	# Remove ticks and borders
+	ax.set_yticks([])
+	ax.set_xticks([])
+	for spine in ax.spines:
+		ax.spines[spine].set_visible(False)
+
+	# Add labels/title if desired
+	# Y labels will appear halfway up the image
+	if ylabel is not None:
+		ax.set_yticks([w/2])
+		ax.set_yticklabels(ylabel)
+
+	# X labels will appear halfway across each image
+	if xlabel:
+		ax.set_xticks(np.linspace(w/2, x_start-2-w/2, n))
+		ax.set_xticklabels(['{}$^\circ$'.format(angle) for angle in shear_list])
+
+	if title is not None:
+		ax.set_title(title)
+
+	return ax
 
 def main():
 	# Load MNIST training set
@@ -160,19 +299,42 @@ def main():
 
 	im = train_set[0][0]
 
-	shears = [-45, -30, -15, 0, 15, 30, 45]
+	shears = [-50, -40, -20, -30, -10, 0, 10, 20, 30, 40, 50]
+	
+	"""
+	# Try plotting with plt.subplots()
+	fig, axs = plt.subplots(10, 1)
 
-	fig, axs = plt.subplots(5, len(shears))
-
-	axs[0] = visualize_shear(axs[0], train_set[0][0], shears)
-	axs[1] = visualize_shear(axs[1], train_set[33][0], shears, labels=False)
-	axs[2] = visualize_shear(axs[2], train_set[146][0], shears, labels=False)
-	axs[3] = visualize_shear(axs[3], train_set[24440][0], shears, labels=False)
-	axs[4] = visualize_shear(axs[4], train_set[50001][0], shears, labels=False)
+	# Get a shear sample of each class
+	for i in range(10):
+		i_sample = next(sample[0] for sample in train_set if sample[1].item() == i)
+		axs[i] = visualize_shear(axs[i], i_sample, shears)#, labels=i+1)
 
 	fig.suptitle('MNIST images with varying shear angle')
 
 	plt.show()
+	"""
 
+	# Try plotting with gridspec
+	fig = plt.figure()
+	gs = mpl.gridspec.GridSpec(10, 1, fig, wspace=0, hspace=0.1)
+
+	# Get a shear sample for each class
+	for i in range(10):
+		title = None
+		xlabel = False
+		if i == 0:
+			title = 'MNIST images with varying shear angle'
+		elif i == 9:
+			xlabel = True
+
+		i_sample = next(sample[0] for sample in train_set if sample[1].item() == i)
+		ax = plt.subplot(gs[i])
+		ax = visualize_shear(ax, i_sample, shears, xlabel=xlabel, title=title, ylabel=str(i))
+
+	# Add common axes labels
+	fig.text(0.51, 0.03, 'Shear angle', ha='center')
+	fig.text(0.13, 0.51, 'Class', va='center', rotation='vertical')
+	plt.show()
 if __name__ == '__main__':
 	main()
