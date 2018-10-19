@@ -13,12 +13,10 @@ import matplotlib as mpl
 mpl.use('TkAgg') # Use TkAgg backend to prevent segmentation fault
 import matplotlib.pyplot as plt
 
-from sklearn import neighbors
-
 import h5py
 
 from one_layer_pytorch import RandomChoiceShear, SimpleNN
-from dim_reduction import PCA
+from dim_reduction import PCA, LDA
 from visual_utils import shear, neighbor_acc_visual, show_neighbs_grid, plot_embedding
 import nn_audit_utils as nnaud
 
@@ -41,14 +39,17 @@ parser.add_argument('--k', type=int, default=500,
 parser.add_argument('--knn-file', type=str, required=True,
     help='file path to save/load kNN model (required)')
 
-parser.add_argument('--run-pca', action='store_true',
-    help='run PCA on the data')
+parser.add_argument('--run-dim-red', action='store_true',
+    help='run dimensionality reduction on the data')
 
-parser.add_argument('--pca-file', type=str, required=True,
+parser.add_argument('--dim-red-file', type=str, required=True,
     help='file path to save/load PCA model (required)')
 
 parser.add_argument('--p', type=int, default=20,
-    help='number of principal components to project onto (default=20)')
+    help='dimension to project data onto (default=20)')
+
+parser.add_argument('--pca-or-lda', type=str, default='pca',
+    help='dimensionality reduction method (lda or pca)')
 
 
 def prepare_query_point(query, shear):
@@ -57,11 +58,11 @@ def prepare_query_point(query, shear):
     pass
 
 
-def evaluate_dim_red(test_dataset, train_dataset, knn_model, dim_red_model):
+def evaluate_dim_red(test_dataset, train_dataset, knn_model, dim_red_model, p=20):
     """Evaluate the dimensionality reduction method for neural network auditing purposes. For each test
     example, calculate the:
     
-        1) percentage of nearest training neighbors that do not have the same class prediction as the 
+        1) percentage of nearest training neighbors that do not have the same class as the 
             test example
         2) variance of nearest train set neighbor shears relative to test example shear
 
@@ -75,13 +76,13 @@ def evaluate_dim_red(test_dataset, train_dataset, knn_model, dim_red_model):
             that is fit to the training set
 
     Returns:
-        predict_err = The average percentage of nearest neighbor training predictions different from test
-            predictions
+        class_err = The average percentage of nearest neighbor training labels different from test
+            labels
         shear_var = The average variance of nearest neighbor training shears from test shears
     """
 
     # Initialize shear_var
-    predict_err = 0
+    class_err = 0
     shear_var = 0
 
     # Length of test set
@@ -99,31 +100,32 @@ def evaluate_dim_red(test_dataset, train_dataset, knn_model, dim_red_model):
         # Get end index of the batch
         b_end = min(n_test, b_start+bs)
 
-        # Get batch of activations (and project them) and shears and predictions
-        a = dim_red_model.project(test_dataset['activations'][b_start:b_end,:])
-        s = np.array(test_dataset['shears'][b_start:b_end])
-        p = np.array(test_dataset['predictions'][b_start:b_end])
+        # Get batch of activations (and project them) and shears and labels
+        # Make sure to convert shears to floats since they are stored as 8-bit integers
+        a = dim_red_model.project(test_dataset['activations'][b_start:b_end,:], p=p)
+        s = np.array(test_dataset['shears'][b_start:b_end]).astype(np.float)
+        l = np.array(test_dataset['labels'][b_start:b_end])
 
         # Get nearest neighbors for neuron batch
         neighbs, _ = knn_model.query(a)
 
         # Get the shears corresponding to neighbors
-        s_neighbs = np.array(train_dataset['shears'])[neighbs]
-        p_neighbs = np.array(train_dataset['predictions'])[neighbs]
+        s_neighbs = np.array(train_dataset['shears']).astype(np.float)[neighbs]
+        l_neighbs = np.array(train_dataset['labels'])[neighbs]
 
-        # Calculate batch prediction error and batch variance
-        b_err = np.mean(p_neighbs != p[:,np.newaxis])
+        # Calculate batch class error and batch variance
+        b_err = np.mean(l_neighbs != l[:,np.newaxis])
         b_var = np.mean((s_neighbs-s[:,np.newaxis])**2)
 
         # Weight batch calculations and then add to totals
         b_weight = (b_end-b_start)/n_test
-        predict_err += b_weight*b_err
+        class_err += b_weight*b_err
         shear_var += b_weight*b_var
 
         # Increment batch start to begin from where previous batch ended
         b_start = b_end
 
-    return predict_err, shear_var
+    return class_err, shear_var
 
 
 def main():
@@ -138,29 +140,49 @@ def main():
     test_neurons = h5py.File('./datasets/neurons/shear_mnist_test_100neurons.hdf5', 'r')
 
 
-    # Initialize a PCA model
-    pca = PCA(args.pca_file, args.p)
+    if args.pca_or_lda == 'pca':
+        # Initialize a PCA model
+        dim_red = PCA(args.dim_red_file)
 
-    # Find the PCA eigenvectors and eigenvalues and save
-    if args.run_pca:
-        pca.run(train_neurons['activations'])
-        pca.save()
-    # Load PCA eigenvectors and eigenvalues
+        # Find the PCA eigenvectors and eigenvalues and save
+        if args.run_dim_red:
+            print('Running PCA...')
+            dim_red.run(train_neurons['activations'])
+            dim_red.save()
+        # Load PCA eigenvectors and eigenvalues
+        else:
+            print('Loading PCA model...')
+            dim_red.load()
+    elif args.pca_or_lda == 'lda':
+        # Initialize an LDA model
+        dim_red = LDA(args.dim_red_file)
+        if args.run_dim_red:
+            print('Running LDA...')
+            dim_red.run(train_neurons['activations'], train_neurons['labels'])
+            dim_red.save()
+        # Load PCA eigenvectors and eigenvalues
+        else:
+            print('Loading LDA model...')
+            dim_red.load()
     else:
-        pca.load()
+        print('Invalid argument for dimensionality reduction method')
+        sys.exit()
+
 
     # Project onto first p principal components
-    train_neurons_proj = pca.project(train_neurons['activations'])
+    train_neurons_proj = dim_red.project(train_neurons['activations'], p=args.p)
 
     # Initialize a kNN model
-    knn = nnaud.kNN(args.knn_file)
+    knn = nnaud.kNN(args.knn_file, k=args.k)
 
     # Fit a kNN model to the projected data and save
     if args.fit_knn:
+        print('Fitting k-nearest neighbors model...')
         knn.fit(train_neurons_proj)
         knn.save()
     # Load kNN model
     else:
+        print('Loading k-nearest neighbors model...')
         knn.load()
 
     # Load MNIST train and test sets
@@ -176,9 +198,10 @@ def main():
 
     ####### PART 1: Calculate knn shear variance and knn class error ###########################
 
-    PCA_predict_err, PCA_shear_var = evaluate_dim_red(test_neurons, train_neurons, knn, pca)
-    print('PCA predict err: ', PCA_predict_err)
-    print('PCA shear var: ', PCA_shear_var)
+    print('Evaluating dimensionality reduction method on sheared MNIST...')
+    class_err, shear_var = evaluate_dim_red(test_neurons, train_neurons, knn, dim_red, args.p)
+    print('class err: ', class_err)
+    print('shear var: ', shear_var)
 
     ####### PART 2: Visualize histograms of randomly sheared test samples ########
 
@@ -188,7 +211,7 @@ def main():
             RandomChoiceShear([query_shear]),
             transforms.ToTensor(),
             transforms.Normalize((0.1307,), (0.3081,))
-            ]))    
+            ]))
 
     # Get a test sample
     query_image, query_label = test_set[2408] 
@@ -200,7 +223,7 @@ def main():
     query_predict = torch.argmax(out, 1)
 
     # Project query
-    query_proj = pca.project(query_acts)
+    query_proj = dim_red.project(query_acts, p=args.p)
 
     # Get the neighbors in the training set
     neighbs, dist = knn.query(query_proj)
@@ -227,7 +250,7 @@ def main():
     query_predict2 = torch.argmax(out2, 1)
 
     # Project and find nearest neighbors
-    query_proj2 = pca.project(query_acts2)
+    query_proj2 = dim_red.project(query_acts2, p=args.p)
 
     # Get the distances and indices of top k nearest neighbors in the train set
     neighbs2, dist2 = knn.query(query_proj2)    

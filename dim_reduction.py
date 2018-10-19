@@ -14,7 +14,8 @@ class LDA(object):
         self.D = None
 
     def run(self, X, y):
-        """Run LDA on data
+        """Run LDA on data by doing eigendecomposition on inv(Sw)*Sb where Sw is the within-class scatter
+        matrix and Sb is the between-class scatter matrix
 
         Args:
             X = Data to undergo dimensionality reduction, with shape [n, d] where n
@@ -22,19 +23,22 @@ class LDA(object):
             y = Class labels for data
         """
 
+        # Convert to NumPy arrays
+        X = np.array(X)
+        y = np.array(y)
+
         # Shape of data
         n, d = X.shape
-
 
         # Calculate the priors for each class
         classes = np.unique(y)
         n_classes = classes.shape[0]
         priors = np.bincount(y)/n
 
-        # Find the mean
+        # Find the mean and center data
         mu = np.mean(X, 0)
 
-        # Compute between-class and within-class scatter
+        # Compute between-class scatter matrix
         Sb = np.zeros([d, d])
         Sw = np.zeros([d, d])
 
@@ -47,19 +51,23 @@ class LDA(object):
 
             # Add class c component to scatters
             Sb += priors[c]*np.outer(mu_c-mu, mu_c-mu)
-            Sw += priors[c]*np.matmul((Xc-mu_c).T, Xc-mu_c)
+            Sw += priors[c]*(Xc-mu_c).T @ Xc-mu_c
 
-        # Do SVD on A=inv(Sw)*Sb
-        A = np.matmul(np.linalg.pinv(Sw), Sb)
-        self.V, S, _ = np.linalg.svd(A, full_matrices=False)
+        # Do eigendecomposition on inv(Sw)*Sb (i.e. solve the generalized eigenproblem Sb*V=Sw*V*D)
+        D, V = np.linalg.eig(np.linalg.pinv(Sw) @ Sb)
 
-        # Truncate V and S since only the first n_classes-1 singular values are nonzero in LDA
-        self.V = self.V[:, 0:n_classes-1]
-        S = S[0:n_classes-1]
+        # There will likely be imaginary parts even though Sb and Sw are symmetric; this is due to 
+        # precision errors, and the imaginary parts should be nearly zero
+        if max(np.imag(D)) >= 1e-5:
+            print('Something went wrong, eigenvalues are complex')
+            sys.exit()
+        else:
+            D = np.real(D)
 
-        # Square singular values to get eigenvalues
-        self.D = S**2
-
+        # Sort eigenvalues and eigenvectors in descending order and truncate since only the first
+        # n_classes-1 eigenvalues are nonzero in LDA
+        self.D = D[np.argsort(-D)][0:n_classes-1]
+        self.V = V[:, np.argsort(-D)][:, 0:n_classes-1]
 
     def save(self):
         """Save the eigenvectors and eigenvalues in HDF5 file at filename"""
@@ -73,18 +81,20 @@ class LDA(object):
         self.V = f['V']
         self.D = f['D']
 
-    def project(self, data, p=np.inf):
+    def project(self, X, p=np.inf):
         """Return the data projected onto the top p principal components"""
 
         # If p is larger than the columns of V, choose the smaller of the two
         p_ = min(p, self.V.shape[1])
 
-        return np.matmul(data, self.V[:,0:p_])
+        # Subtract mu and project onto first p_ columns of V
+        return np.array(X) @ self.V[:,0:p_]
 
 
 class PCA(object):
     def __init__(self, filename):
-        """Object for dimensionality reduction using PCA/truncated SVD"""
+        """Object for dimensionality reduction using PCA (principal component analysis) (the truncated SVD
+        method is used)"""
         self.filename = filename
 
         self.mu = None
@@ -99,6 +109,9 @@ class PCA(object):
             X = Data to undergo dimensionality reduction, with shape [n, d] where n
                 is the number of samples and d is the dimension
         """
+
+        # Convert to NumPy array
+        X = np.array(X)
 
         # Shape of the data
         n, d = X.shape
@@ -138,14 +151,14 @@ class PCA(object):
         p_ = min(p, self.V.shape[1])
 
         # Subtract mu and project onto first p_ columns of V (first p_ principal components)
-        return np.matmul(np.array(X)-self.mu, self.V[:,0:p_])
+        return (np.array(X)-self.mu) @ self.V[:,0:p_]
 
 
 def main():
     f = h5py.File('./datasets/neurons/shear_mnist_train_100neurons.hdf5', 'r')
 
-    data = f['activations'][0:1000]
-    labels = f['labels'][0:1000]
+    data = f['activations']#[0:1000]
+    labels = f['labels']#[0:1000]
 
     lda = LDA('test')
     lda.run(data, labels)
