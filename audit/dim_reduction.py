@@ -1,5 +1,5 @@
 import numpy as np
-
+from scipy.linalg import eig
 import h5py
 
 import os
@@ -14,8 +14,9 @@ class LDA(object):
         self.D = None
 
     def run(self, X, y):
-        """Run LDA on data by doing eigendecomposition on inv(Sw)*Sb where Sw is the within-class scatter
-        matrix and Sb is the between-class scatter matrix
+        """Run LDA on data by solving eigendecomposition on Sb*V=Sw*V*D where Sw is the within-class scatter
+        matrix and Sb is the between-class scatter matrix. Note that Sw must be full rank for this to be possible.
+        To ensure this, PCA is done on the data first and any irrelevation principal components are removed.
 
         Args:
             X = Data to undergo dimensionality reduction, with shape [n, d] where n
@@ -29,6 +30,28 @@ class LDA(object):
 
         # Shape of data
         n, d = X.shape
+
+        # Convert to float64
+        X = X.astype(np.float64)
+
+        # Approximate the rank
+        rank = np.linalg.matrix_rank(X)
+
+        # Do PCA first if necessary
+        if rank < min(n, d):
+            #  Compute mean
+            mu = np.mean(X, 0)
+            # Zero-out meanm scale by square root of n
+            X0 = np.sqrt(n)*(X - mu)
+            # Truncated SVD
+            _, S, VT = np.linalg.svd(X0, full_matrices=False)
+            # Project X onto relevant principal components
+            V_PCA = VT.T
+            X = X @ V_PCA[:, :rank]
+            # Update d
+            d = rank
+        else:
+            V_PCA = np.eye(d)
 
         # Calculate the priors for each class
         classes = np.unique(y)
@@ -53,8 +76,9 @@ class LDA(object):
             Sb += priors[c]*np.outer(mu_c-mu, mu_c-mu)
             Sw += priors[c]*(Xc-mu_c).T @ Xc-mu_c
 
+
         # Do eigendecomposition on inv(Sw)*Sb (i.e. solve the generalized eigenproblem Sb*V=Sw*V*D)
-        D, V = np.linalg.eig(np.linalg.pinv(Sw) @ Sb)
+        D, V = eig(Sb, Sw)#np.linalg.pinv(Sw) @ Sb)
 
         # There will likely be imaginary parts even though Sb and Sw are symmetric; this is due to 
         # precision errors, and the imaginary parts should be nearly zero
@@ -68,6 +92,9 @@ class LDA(object):
         # n_classes-1 eigenvalues are nonzero in LDA
         self.D = D[np.argsort(-D)][0:n_classes-1]
         self.V = V[:, np.argsort(-D)][:, 0:n_classes-1]
+
+        # Factor PCA into the projection
+        self.V = V_PCA @ self.V
 
     def save(self):
         """Save the eigenvectors and eigenvalues in HDF5 file at filename"""
@@ -97,7 +124,6 @@ class PCA(object):
         method is used)"""
         self.filename = filename
 
-        self.mu = None
         self.V = None
         self.D = None
 
@@ -111,15 +137,14 @@ class PCA(object):
         """
 
         # Convert to NumPy array
-        X = np.array(X)
+        X = np.array(X).astype(np.float64)
 
         # Shape of the data
         n, d = X.shape
 
         # Zero out the mean of the data and scale by sqrt(n) so that X0'*X0 would give
         # the covariance matrix
-        self.mu = np.mean(X, 0)
-        X0 = np.sqrt(n)*(X - self.mu)
+        X0 = np.sqrt(n)*(X - np.mean(X, 0))
 
         # Run truncated SVD on the zero-mean data, only keep nonzero eigenvalues
         # For SVD of X0=USV', the rows of V are eigenvectors of X0'X0
@@ -134,14 +159,12 @@ class PCA(object):
     def save(self):
         """Save the eigenvectors and eigenvalues in HDF5 file at filename"""
         f = h5py.File(self.filename, 'w')
-        f.create_dataset('mu', data=self.mu)
         f.create_dataset('V', data=self.V)
         f.create_dataset('D', data=self.D)
 
     def load(self):
         """Load the eigenvectors and eigenvalues from filename"""
         f = h5py.File(self.filename, 'r')
-        self.mu = np.array(f['mu'])
         self.V = np.array(f['V'])
         self.D = np.array(f['D'])
 
@@ -151,7 +174,7 @@ class PCA(object):
         p_ = min(p, self.V.shape[1])
 
         # Subtract mu and project onto first p_ columns of V (first p_ principal components)
-        return (np.array(X)-self.mu) @ self.V[:,0:p_]
+        return np.array(X).astype(np.float64) @ self.V[:,0:p_]
 
 
 def main():

@@ -21,13 +21,24 @@ from mpl_toolkits.mplot3d import axes3d
 import sys
 import os
 
+
+def get_Axes_size(ax):
+    """Get the size of a Matplotlib Axes object (in pixels)"""
+    bbox = ax.get_window_extent()
+    return bbox.height, bbox.width
+
+def set_Axes_size(ax, h, w, dpi=80):
+    """Set the size of a Matplotlib Axes object (in pixels)"""
+    ax.figure.set_size_inches(h/dpi, w/dpi)
+
+
 def normalize(data):
     """Normalize data to be in [0,1]"""
     d_min = np.min(data)
     d_max = np.max(data)
     return (data - d_min) / (d_max - d_min)
- 
-def plot_embedding(data, labels, images, title=None, plot_type='scatter', show_samples=False):    
+
+def plot_embedding(data, labels, title=None, plot_type='scatter', images=None):    
     """Visualize the data as a scatter plot in a reduced dimension (either 2-d or 3-d). You can also
     optionally display sample images to give an idea of the data subspace, and display each data point by
     its class label (integers 0-9) instead of a point
@@ -45,6 +56,12 @@ def plot_embedding(data, labels, images, title=None, plot_type='scatter', show_s
         fig, ax = The finished plot (Figure and Axes objects)
     """
 
+    # Get colormap (depending on version of Matplotlib it will be 'tab10' or 'Vega10')
+    try:
+        cm = plt.cm.tab10
+    except:
+        cm = plt.cm.Vega10
+
     # Get the dimensions of the data
     m, dim = data.shape
 
@@ -61,13 +78,13 @@ def plot_embedding(data, labels, images, title=None, plot_type='scatter', show_s
         if plot_type == 'digit':
             for i in range(m):
                 # Plot digit as a string, at the location determined by the data point
-                # Color is determined from Set1 colormap
+                # Color is determined from colormap
                 ax.text(data[i,0], data[i,1], data[i,2], str(labels[i]),
-                    color=plt.cm.tab10(labels[i] / 10.),
+                    color=cm(labels[i]),
                     fontdict={'weight': 'bold', 'size': 9})
 
         elif plot_type == 'scatter':
-            ax.scatter(data[:,0], data[:,1], data[:,2], c = labels)
+            ax.scatter(data[:,0], data[:,1], data[:,2], c=labels, cmap=cm)
 
     # Plot for 2-d data
     if dim == 2:
@@ -78,21 +95,16 @@ def plot_embedding(data, labels, images, title=None, plot_type='scatter', show_s
         if plot_type == 'digit':
             for i in range(m):
                 # Plot digit as a string, at the location determined by the data point
-                # Depending on version of matplotlib, tab10 colormap may be Vega10
-                try:
-                    ax.text(data[i,0], data[i,1], str(labels[i]),
-                    color=plt.cm.tab10(labels[i] / 10.),
+                # Color is determined from colormap
+                ax.text(data[i,0], data[i,1], data[i,2], str(labels[i]),
+                    color=cm(labels[i]),
                     fontdict={'weight': 'bold', 'size': 9})
-                except:
-                    ax.text(data[i,0], data[i,1], str(labels[i]),
-                            color=plt.cm.Vega10(labels[i] / 10.),
-                            fontdict={'weight': 'bold', 'size': 9})
 
         elif plot_type == 'scatter':
-            ax.scatter(data[:,0], data[:,1], c=labels)
+            ax.scatter(data[:,0], data[:,1], c=labels, cmap=cm)
 
         # Show sample images if desired (will only work with matplotlib v1.0+)
-        if show_samples and hasattr(offsetbox,  'AnnotationBbox'):
+        if (images != None) and hasattr(offsetbox,  'AnnotationBbox'):
 
             # Initialize shown images locations array, starting with upper right corner of plot
             shown_images = np.array([[1.,1.]])
@@ -163,19 +175,18 @@ def neighbor_acc_visual(ax, accuracies, captured_var, dims, image):
             (5,95), pad=0)
     ax.add_artist(imagebox)
         
-    return ax
-   
+    return ax   
 
-def show_neighbs_grid(ax, query_image, neighbor_images, dim, grid_size=6):
+def show_neighbs_grid(ax, query_image, neighbor_images, grid_size=6):
     """Show a grid of nearest neighbors in the training set. Query image is shown in the top left,
-    and the neighbors are shown in the rest of the grid. Grid has 'grid_edge' number of images along
+    and the neighbors are shown in the rest of the grid. Grid has 'grid_size' number of images along
     each side
 
     Args:
         ax = A matplotlib Axes object to plot on
         query_image = The test image
         neighbor_images = The nearest training images
-        grid_edge = The number of images along an edge
+        grid_size = The number of images along an edge
 
     Returns:
         ax = The finished Axes object
@@ -185,7 +196,7 @@ def show_neighbs_grid(ax, query_image, neighbor_images, dim, grid_size=6):
     neighbor_images = neighbor_images[:grid_size**2-1, :, :]
 
     # Concatenate query image with neighbor images
-    images = np.concatenate((query_image[np.newaxis,:,:], neighbor_images), 0)
+    images = np.concatenate((query_image[None,:,:], neighbor_images), 0)
 
     # Image size in pixels
     im_size = neighbor_images.shape[-1]
@@ -201,25 +212,74 @@ def show_neighbs_grid(ax, query_image, neighbor_images, dim, grid_size=6):
         for k in range(grid_size):
             # The x-coordinate
             kx = k*(im_size+2)+2
-            grid[kx:kx+im_size, jx:jx+im_size] = 1.-images[k+j*grid_size]
+            grid[kx:kx+im_size, jx:jx+im_size] = images[k+j*grid_size]
 
     # Add border around query image and the whole grid
-    g = 0.5
-    grid[im_size:im_size+4, 0:im_size+4] = g
-    grid[0:im_size+4, im_size:im_size+4] = g
-    grid = np.pad(grid, ((4,4),(4,4)), 'constant', constant_values=((g,g),(g,g)))        
+    g = 0.7*255
+    grid[im_size+1:im_size+2, 0:im_size+1] = g
+    grid[0:im_size+2, im_size+1:im_size+2] = g
+    grid = np.pad(grid, ((1,1),(1,1)), 'constant', constant_values=((g,g),(g,g)))        
 
     # Place grid image inside the Axes object
-    ax.imshow(grid, cmap=plt.cm.gray_r)
+    ax.imshow(grid, cmap=plt.cm.gray)
 
     # Remove axes and borders
     ax.axis('off')
     ax.patch.set_visible('off')
 
-    # Set title
-    ax.set_title('{} Nearest Test Set Images in {}-dim Neuron Space'.format(grid_size**2-1, dim))
+    return ax
+
+def show_neighbs_grid2(ax, query_image, neighbor_images, grid_size=6, buff=10):
+    """Show a grid of nearest neighbors in the training set. Query image is shown in the top left,
+    and the neighbors are shown in a separate grid. Grid has 'grid_size' number of images along
+    each side
+
+    Args:
+        ax = A matplotlib Axes object to plot on
+        query_image = The test image
+        neighbor_images = The nearest training images
+        grid_size = The number of images along an edge
+        buff = Number of pixels in between query image and neighbor images
+
+    Returns:
+        ax = The finished Axes object
+    """
+
+    # Grab number of nearest neighbors needed for the grid
+    neighbor_images = neighbor_images[:grid_size**2, :, :]
+
+    # Image size in pixels
+    im_size = neighbor_images.shape[-1]
+
+    # Create blank grid, accounting for 1-pixel separation between images
+    grid_size_in_pixels = grid_size*im_size + (grid_size+1)
+    grid = 255*np.ones([grid_size_in_pixels, grid_size_in_pixels])
+
+    # Loop over neighbor images and add them to the grid
+    for j in range(grid_size):
+        # The x-coordinate
+        x = j*(im_size+1)+1
+        for k in range(grid_size):
+            # The y-coordinate
+            y = k*(im_size+1)+1
+            grid[y:y+im_size, x:x+im_size] = neighbor_images[k+j*grid_size]
+
+    # Add query image to the left
+    query_col = 255*np.ones([grid_size_in_pixels, im_size])
+    query_col[1:im_size+1, 0:im_size] = query_image
+
+    # Concatenate
+    grid = np.concatenate((query_col, 255*np.ones([grid_size_in_pixels, buff]), grid), 1)
+
+    # Place grid image inside the Axes object
+    ax.imshow(grid, cmap=plt.cm.gray)
+
+    # Remove axes and borders
+    ax.axis('off')
+    ax.patch.set_visible('off')
 
     return ax
+
 
 def shear(image, shear):
 	"""Take a PyTorch Tensor object, shear it using 'shear' as the angle, then return

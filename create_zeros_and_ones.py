@@ -3,10 +3,10 @@ import numpy as np
 
 def main():
 	# Load training set
-	f_train = h5py.File('./datasets/neurons/shear_mnist_train_100neurons.hdf5', 'r')
+	f_train = h5py.File('./datasets/neurons/shear_mnist_test_100neurons.hdf5', 'r')
 
 	# Create a new file for just zeros and ones
-	f_zo = h5py.File('./datasets/neurons/shear_zeros_ones.hdf5', 'w')
+	f_zo = h5py.File('./datasets/neurons/shear_zeros_ones_test.hdf5', 'w')
 
 	# Get the indices of training samples with a class label of 0 or 1
 	idcs = np.argwhere(np.array(f_train['labels']) < 2).squeeze()

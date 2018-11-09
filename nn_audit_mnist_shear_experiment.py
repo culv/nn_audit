@@ -172,6 +172,11 @@ def main():
     # Project onto first p principal components
     train_neurons_proj = dim_red.project(train_neurons['activations'], p=args.p)
 
+    # Visualize embedding in 2-d
+    fig, ax = plot_embedding(dim_red.project(train_neurons['activations'], p=3), train_neurons['labels'], title='PCA')
+    plt.show()
+    sys.exit()
+
     # Initialize a kNN model
     knn = nnaud.kNN(args.knn_file, k=args.k)
 

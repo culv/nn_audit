@@ -3,10 +3,16 @@ __pycache__/
 *.py[cod]
 
 # Saved images
-images/
+images/*
+!models/.keep
 
 # Datasets
-datasets/
+datasets/*
+!datasets/.keep
 
 # Models
-models/
+models/*
+!models/.keep
+
+# Trained networks
+networks/*.pt

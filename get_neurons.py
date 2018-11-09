@@ -13,14 +13,14 @@ import h5py
 from tqdm import tqdm
 import argparse
 
-from one_layer_pytorch import SimpleNN, RandomChoiceShear
-from nn_audit_utils import gather_neuron_data
+from networks.mnist_convnet import ConvNet, RandomChoiceShear
+from audit.nn_audit_utils import gather_neuron_data
 
 import sys
 import os
 
 # Command line arguments
-parser = argparse.ArgumentParser(description='Pytorch one layer fully-connected')
+parser = argparse.ArgumentParser(description='Gather neuron activations from hidden fully-connected layers')
 
 parser.add_argument('--batch-size', type=int, default=64,
 	help='batch size for neural network input (default=64)')
@@ -34,6 +34,9 @@ parser.add_argument('--save-path', type=str, required=True,
 parser.add_argument('--train', action='store_true',
 	help='collect neuron data on the train set')
 
+parser.add_argument('--compress', action='store_true',
+	help='compress HDF5 files using gzip')
+
 parser.add_argument('--shear', action='store_true',
 	help='collect neuron data for the random shear experiment')
 
@@ -44,8 +47,8 @@ def main():
 	print(args)
 
 	# Initialize blank model, then load in parameters from args.model_path
-	fc = SimpleNN()
-	fc.load_state_dict(torch.load(args.model_path))
+	cnn = ConvNet()
+	cnn.load_state_dict(torch.load(args.model_path))
 
 	if args.shear:
 		# Get MNIST set for each shear in shear_list
@@ -83,8 +86,12 @@ def main():
 		mnist_index = np.linspace(0, len(data)-1, len(data)).astype(np.uint)
 		metadata_dict = dict(mnist_index=mnist_index)
 
-
-	gather_neuron_data(fc, data, args.save_path, batch_size=args.batch_size, compression='gzip', metadata=metadata_dict)
+	if args.compress:
+		compression='gzip'
+	else:	
+		compression=None
+		
+	gather_neuron_data(cnn, data, args.save_path, 512, batch_size=args.batch_size, compression=compression, metadata=metadata_dict)
 
 
 if __name__ == '__main__':

@@ -18,7 +18,7 @@ from tqdm import tqdm
 import sys
 import os
 
-def gather_neuron_data(model, dataset, fname, batch_size=64, compression=None, metadata=dict()):
+def gather_neuron_data(model, dataset, fname, num_neurons, batch_size=64, compression=None, metadata=dict()):
 	"""Collect fully-connected neuron activations from a network for every image in a 
 	given dataset, and saves in an HDF5 file. The default dataset fields are 'labels', 'predictions',
 	and 'activations'. Other dataset fields may be specified in the 'metadata' input
@@ -27,29 +27,26 @@ def gather_neuron_data(model, dataset, fname, batch_size=64, compression=None, m
 		model = PyTorch model (must be set up to return fully-connected layer activations)
 		dataset = A PyTorch Dataset object (contains data and labels)
 		fname = Full path to save HDF5 file to
+		num_neurons = Number of neurons in hidden fully-connected layers
 		batch_size = Size of batches to pass through neural network
 		compression = Compression mode for h5py
 		metadata = Python dictionary of other datasetfields to save in the HDF5 file (e.g. image shear
 			parameters, the image index in the training or test set, the image itself, etc.) 
-	
-	Returns:
-
 	"""
 
 	# Get length of training set
 	size = len(dataset)
 
-	# Create HDF5 Data file
-	f = h5py.File(fname, 'w')
+	# Create HDF5 file
+	with h5py.File(fname, 'w') as f:
+		# Create datasets
+		f.create_dataset('labels', (size,), compression=compression, dtype='i')
+		f.create_dataset('predictions', (size,), compression=compression, dtype='i')
+		f.create_dataset('activations', (size, num_neurons), compression=compression, dtype='f')
 
-	# Create datasets for labels, predictions, neuron activations
-	label_dset = f.create_dataset('labels', (size, ), compression=compression, dtype='i')
-	predict_dset = f.create_dataset('predictions', (size, ), compression=compression, dtype='i')
-	neuron_dset = f.create_dataset('activations', (size, 100), compression=compression, dtype='f')
-
-	# Create datasets for the fields in other_dict
-	for k, v in metadata.items():
-		f.create_dataset(k, data=v)
+		# Create and fill datasets for the fields in other_dict
+		for k, v in metadata.items():
+			f.create_dataset(k, data=v)
 
 	# Set model to eval mode
 	model.eval()
@@ -61,25 +58,22 @@ def gather_neuron_data(model, dataset, fname, batch_size=64, compression=None, m
 		# Image batch shape
 		bs, c, h, w = images.shape
 
-		# Flatten image
-		images = images.reshape(bs, c*h*w)
-
 		# Forward pass of network to get neuron activations
-		fc_neurons, out = model.forward(images)
-
+		fc, out = model.forward(images)
+	
 		# Get network's classification
 		predicts = torch.argmax(out, 1).numpy()
 
-		# Convert hidden fully-connected neurons to NumPy array
-		acts = fc_neurons[0].detach().numpy()
-
-		# Save to HDF5 file
-		label_dset[i:i+bs] = labels
-		predict_dset[i:i+bs] = predicts
-		neuron_dset[i:i+bs] = acts
+		# Save to HDF5 file as separate small datasets
+		with h5py.File(fname, 'a') as f:
+			f['labels'][i:i+bs] = labels.numpy()
+			f['predictions'][i:i+bs] = predicts
+			f['activations'][i:i+bs] = fc.detach().numpy()			
 
 		# Increment index
 		i += bs
+
+
 
 class kNN(object):
 	def __init__(self, filename, k=500):
