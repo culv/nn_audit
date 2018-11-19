@@ -1,6 +1,7 @@
 # Compiled files
 __pycache__/
 *.py[cod]
+*.pickle
 
 # Saved images
 images/*
@@ -13,6 +14,9 @@ datasets/*
 # Models
 models/*
 !models/.keep
+
+# Figures
+figures/*.png
 
 # Trained networks
 networks/*.pt
